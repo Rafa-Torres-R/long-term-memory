@@ -1,4 +1,11 @@
-cat > ~/ManiSkill-HAB/test_rafa/interactive_robot/llm_command_parser.py << 'EOF'
+# Purpose: Converts natural language → simplified subtasks
+# pythonclass QwenCommandParser:
+#     def parse_command(user_command):
+#         # 1. Check hard-coded cases (swap, drawer pickup)
+#         # 2. Otherwise use LLM
+#         # 3. Translate friendly names to actual IDs
+#         return simplified_subtasks
+
 """
 LLM Command Parser with Hard-coded Logic for Complex Cases
 """
@@ -206,4 +213,3 @@ Respond ONLY with JSON array."""
             self.object_locations[obj_id] = new_location
         if new_position and obj_id in self.object_positions:
             self.object_positions[obj_id] = new_position
-EOF
