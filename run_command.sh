@@ -1,3 +1,56 @@
+# Purpose: Calls ManiSkill evaluation
+# bash#!/bin/bash
+# # Takes task plan JSON and runs it through ManiSkill
+# SAPIEN_NO_DISPLAY=1 python -m mshab.evaluate configs/evaluate.yml \
+#     eval_env.task_plan_fp="$TASK_PLAN_FILE" \
+#     ...
+# ```
+
+# ## **External Dependencies:**
+
+# ### **6. ManiSkill-HAB** (Already installed)
+# - Location: `~/ManiSkill-HAB/`
+# - Provides: Environment, scene, evaluation infrastructure
+
+# ### **7. Trained Policies** (Already downloaded)
+# - Location: `~/ManiSkill-HAB/mshab_checkpoints/rl/set_table/`
+# - Contains: pick/, place/, navigate/, open/, close/
+
+# ### **8. Qwen Model** (Auto-downloaded on first run)
+# - Model: `Qwen/Qwen2.5-1.5B-Instruct`
+# - Downloads to: `~/.cache/huggingface/`
+
+# ## **Data Flow Diagram:**
+# ```
+# scene_config.py ──┐
+#                   ├──> llm_command_parser.py
+# User Command ─────┘         │
+#                             ↓
+#                   Simplified Subtasks
+#                             │
+#                             ↓
+#                   subtask_enricher.py
+#                             │
+#                             ↓
+#                   Enriched Subtasks
+#                             │
+#                             ↓
+#               interactive_executor_v2.py
+#                             │
+#                   Creates task_plan.json
+#                             │
+#                             ↓
+#                     run_command.sh
+#                             │
+#                             ↓
+#                   ManiSkill-HAB + Policies
+#                             │
+#                             ↓
+#                       Robot Action 🤖
+#                             │
+#                             ↓
+#                        Video Output 📹
+
 #!/usr/bin/bash
 # Run a single interactive command using ManiSkill-HAB evaluation infrastructure
 
