@@ -1,3 +1,11 @@
+# Purpose: Converts natural language → simplified subtasks
+# pythonclass QwenCommandParser:
+#     def parse_command(user_command):
+#         # 1. Check hard-coded cases (swap, drawer pickup)
+#         # 2. Otherwise use LLM
+#         # 3. Translate friendly names to actual IDs
+#         return simplified_subtasks
+
 """
 LLM Command Parser with Hard-coded Logic for Complex Cases
 """
