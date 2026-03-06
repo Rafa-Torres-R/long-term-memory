@@ -1,3 +1,22 @@
+# Purpose: Stores scene knowledge
+# pythonOBJECTS = {
+#     "024_bowl-0": {...},  # Object positions
+#     "024_bowl-3": {"initial_location": "drawer", ...}
+# }
+
+# ARTICULATIONS = {
+#     "drawer": {
+#         "articulation_type": "kitchen_counter",
+#         "articulation_handle_link_idx": 7,
+#         ...
+#     }
+# }
+
+# FRIENDLY_NAME_TO_OBJ_ID = {
+#     "bowl_0": "024_bowl-0",
+#     "bowl_3": "024_bowl-3"
+# }
+
 """
 Scene Configuration: Stores all articulation details and object positions
 """
