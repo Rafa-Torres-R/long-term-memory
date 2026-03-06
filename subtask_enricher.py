@@ -1,3 +1,12 @@
+# Purpose: Adds full ManiSkill details
+# pythonclass SubtaskEnricher:
+#     def enrich_subtasks(simplified_subtasks):
+#         # For each subtask:
+#         # - Add UIDs
+#         # - Add articulation configs
+#         # - Add goal coordinates
+#         return enriched_subtasks
+
 """
 Subtask Enricher: Converts simplified LLM output to full ManiSkill-HAB format
 """
