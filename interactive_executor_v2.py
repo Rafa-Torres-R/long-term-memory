@@ -1,3 +1,11 @@
+
+# class InteractiveRobotExecutor:
+#     def execute_command(user_command):
+#         # 1. Parse with LLM
+#         # 2. Enrich subtasks
+#         # 3. Create task plan JSON
+#         # 4. Run simulation
+
 """
 Interactive Robot Executor V2 - Uses existing evaluation infrastructure
 """
