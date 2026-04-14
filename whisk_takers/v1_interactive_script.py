@@ -5,7 +5,7 @@ Interactive Robot Live Session
 - One continuous video is saved at the end
 Usage:
     cd ~/ManiSkill-HAB
-    python test_rafa/live_session/interactive_session.py
+    python whisk_takers/interactive_session_v1.py
 """
 import os
 import sys
@@ -19,13 +19,13 @@ from datetime import datetime
 # Path setup — must happen before any mshab imports
 # -----------------------------------------------------------------------
 MSHAB_ROOT            = Path("/home/fri/ManiSkill-HAB")
-LIVE_SESSION_DIR      = MSHAB_ROOT / "test_rafa/live_session"
+WHISK_TAKERS_DIR      = MSHAB_ROOT / "whisk_takers"
 INTERACTIVE_ROBOT_DIR = MSHAB_ROOT / "test_rafa/interactive_robot"
 
 os.chdir(str(MSHAB_ROOT))
 sys.path.insert(0, str(MSHAB_ROOT))
-sys.path.insert(0, str(LIVE_SESSION_DIR))
-sys.path.insert(0, str(INTERACTIVE_ROBOT_DIR))  # for llm_command_parser + scene_config
+sys.path.insert(0, str(WHISK_TAKERS_DIR))
+sys.path.insert(0, str(INTERACTIVE_ROBOT_DIR))
 
 os.environ["SAPIEN_NO_DISPLAY"] = "1"
 
@@ -42,12 +42,12 @@ from mshab.envs.planner import (
 )
 from mshab.agents.sac.agent import Agent as SACAgent
 from gymnasium import spaces
-from mshab.agents.sac.agent import Agent as SACAgent
 from mshab.agents.ppo.agent import Agent as PPOAgent
 from mshab.utils.array import to_tensor, recursive_slice
 from mshab.utils.config import parse_cfg
 
-from live_command_parser import LiveCommandParser
+from llm_command_parser import QwenCommandParser
+from subtask_enricher import SubtaskEnricher
 
 # -----------------------------------------------------------------------
 # Config
@@ -64,8 +64,8 @@ DATASET       = "ReplicaCADRearrangeDataset"
 DEVICE        = "cuda" if torch.cuda.is_available() else "cpu"
 CKPT_DIR      = MSHAB_ROOT / "mshab_checkpoints/rl/set_table"
 
-TASK_DIR   = LIVE_SESSION_DIR / "generated_tasks"
-OUTPUT_DIR = LIVE_SESSION_DIR / "results"
+TASK_DIR   = WHISK_TAKERS_DIR / "generated_tasks"
+OUTPUT_DIR = WHISK_TAKERS_DIR / "results"
 TASK_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -139,14 +139,14 @@ def create_env(task_file: Path, video_path: Path):
     return make_env(env_cfg, video_path=str(video_path))
 
 # -----------------------------------------------------------------------
-# Load all PPO policies for set_table
+# Load all policies for set_table
 # -----------------------------------------------------------------------
 def load_policies(env, dummy_obs):
     uenv: SequentialTaskEnv = env.unwrapped
     obs_space = uenv.single_observation_space
     act_space = uenv.single_action_space
 
-    # Build pixel obs space with flattened frame stack (matches evaluate.py)
+    # Build pixel obs space with flattened frame stack
     model_pixel_obs_space = {}
     for k, space in obs_space["pixels"].items():
         shape, low, high, dtype = space.shape, space.low, space.high, space.dtype
@@ -169,7 +169,6 @@ def load_policies(env, dummy_obs):
                 print(f"  ⚠️  Missing: {subtask_name}/{targ_name}")
                 continue
 
-            # Read algo type from checkpoint's own config
             algo_name = parse_cfg(default_cfg_path=str(cfg_path)).algo.name
 
             if algo_name == "sac":
@@ -225,7 +224,7 @@ def load_policies(env, dummy_obs):
     return policies
 
 # -----------------------------------------------------------------------
-# Act function — mirrors evaluate.py logic exactly
+# Act function
 # -----------------------------------------------------------------------
 def act(obs, policies, uenv: SequentialTaskEnv):
     with torch.no_grad():
@@ -244,7 +243,6 @@ def act(obs, policies, uenv: SequentialTaskEnv):
             open_idx     = subtask_type == SUBTASK_TYPE_IDS["open"]
             close_idx    = subtask_type == SUBTASK_TYPE_IDS["close"]
 
-            # Determine target names per env
             sapien_obj_names = [None] * NUM_ENVS
             for env_num, subtask_num in enumerate(
                 torch.clip(ptr, max=len(uenv.task_plan) - 1)
@@ -273,7 +271,6 @@ def act(obs, policies, uenv: SequentialTaskEnv):
                     if not matched:
                         targ_names.append("all")
 
-            # Build per-target bool index maps
             tn_env_idxs = {}
             for env_num, tn in enumerate(targ_names):
                 if tn not in tn_env_idxs:
@@ -293,7 +290,6 @@ def act(obs, policies, uenv: SequentialTaskEnv):
                                 recursive_slice(obs_t, stei)
                             )
                             return
-                # fallback to "all"
                 if "all" in policies.get(subtask_name, {}):
                     action[subtask_env_idx] = policies[subtask_name]["all"](
                         recursive_slice(obs_t, subtask_env_idx)
@@ -315,12 +311,14 @@ def act(obs, policies, uenv: SequentialTaskEnv):
 # -----------------------------------------------------------------------
 # Run simulation until new subtasks complete or max steps reached
 # -----------------------------------------------------------------------
-def run_until_done(env, policies, start_subtask_idx: int, total_subtasks: int):
+def run_until_done(env, policies, start_subtask_idx: int, total_subtasks: int, all_subtasks: list):
+    """
+    Returns: (success, final_subtask_pointer, failed_subtask_info)
+    """
     uenv: SequentialTaskEnv = env.unwrapped
 
     obs, _ = env.reset(seed=SEED, options=dict(reconfigure=True))
 
-    # Advance pointer past already-completed subtasks
     if start_subtask_idx > 0:
         print(f"  ⏩ Resuming from subtask {start_subtask_idx + 1}/{total_subtasks}")
         uenv.subtask_pointer = torch.full(
@@ -329,8 +327,11 @@ def run_until_done(env, policies, start_subtask_idx: int, total_subtasks: int):
         )
 
     success = False
+    failed_subtask_info = None
 
     print(f"  🤖 Running subtasks {start_subtask_idx + 1} → {total_subtasks}...")
+
+    last_ptr = start_subtask_idx
 
     for step in range(MAX_STEPS):
         action = act(obs, policies, uenv)
@@ -338,21 +339,41 @@ def run_until_done(env, policies, start_subtask_idx: int, total_subtasks: int):
 
         current_ptr = uenv.subtask_pointer[0].item()
 
+        # Check if subtask completed
+        if current_ptr > last_ptr:
+            print(f"  ✅ Subtask {last_ptr + 1} completed at step {step + 1}")
+            last_ptr = current_ptr
+
         if current_ptr >= total_subtasks:
-            print(f"  ✅ Completed at step {step + 1}!")
+            print(f"  ✅ All subtasks completed at step {step + 1}!")
             success = True
             break
 
         if (step + 1) % 200 == 0:
             print(f"  📊 Step {step + 1}/{MAX_STEPS} | Subtask {current_ptr + 1}/{total_subtasks}")
 
+    # If we didn't complete, record which subtask we failed on
     if not success:
-        print(f"  ⚠️  Max steps reached without full completion")
+        failed_idx = uenv.subtask_pointer[0].item()
+        if failed_idx < len(all_subtasks):
+            failed_subtask = all_subtasks[failed_idx]
+            failed_subtask_info = {
+                'subtask_number': failed_idx + 1,
+                'subtask_type': failed_subtask.get('type', 'unknown'),
+                'obj_id': failed_subtask.get('obj_id', 'N/A'),
+                'uid': failed_subtask.get('uid', 'N/A'),
+            }
+            print(f"\n  ❌ FAILED at subtask {failed_idx + 1}/{total_subtasks}")
+            print(f"     Type: {failed_subtask_info['subtask_type']}")
+            print(f"     Object: {failed_subtask_info['obj_id']}")
+            print(f"     UID: {failed_subtask_info['uid']}")
+        else:
+            print(f"  ⚠️  Max steps reached without completion")
 
-    return success, uenv.subtask_pointer[0].item()
+    return success, uenv.subtask_pointer[0].item(), failed_subtask_info
 
 # -----------------------------------------------------------------------
-# Combine video clips into one final video
+# Combine video clips
 # -----------------------------------------------------------------------
 def combine_videos(video_files: list, output_path: Path):
     if not video_files:
@@ -391,37 +412,31 @@ def main():
     print("  'quit'  → exit without saving")
     print("=" * 60)
 
-    # ── Bootstrap: create a minimal env to get obs/act spaces for policy loading
     print("\n📦 Loading LLM parser...")
-    parser = LiveCommandParser()
+    parser = QwenCommandParser()
+    enricher = SubtaskEnricher()
 
     print("\n📦 Building bootstrap env to load policies...")
     bootstrap_subtasks = [
-        {"type": "navigate", "target": "024_bowl-0"},
-        {"type": "pick",     "obj_id": "024_bowl-0"},
+        {"type": "navigate", "uid": "nav_1"},
+        {"type": "pick", "uid": "pick_1", "obj_id": "024_bowl-0", "articulation_config": None},
     ]
     bootstrap_task_file = TASK_DIR / "bootstrap_task.json"
     build_task_json(bootstrap_subtasks, bootstrap_task_file)
 
     bootstrap_env = create_env(bootstrap_task_file, SESSION_DIR / "bootstrap")
-    uenv_boot: SequentialTaskEnv = bootstrap_env.unwrapped
     dummy_obs, _ = bootstrap_env.reset(seed=SEED, options=dict(reconfigure=True))
-    dummy_obs_t  = to_tensor(dummy_obs, device=DEVICE, dtype="float")
-    act_space    = uenv_boot.single_action_space
 
     print("\n📦 Loading policies...")
     policies = load_policies(bootstrap_env, dummy_obs)
-    #policies = load_policies(dummy_obs_t, act_space)
     bootstrap_env.close()
     print("✅ Ready!\n")
 
-    # ── Session state
     all_subtasks  = []
     completed_ptr = 0
     video_files   = []
     command_count = 0
 
-    # ── Interactive loop
     while True:
         print(f"\n{'─' * 50}")
         user_input = input("🗣️  Command: ").strip()
@@ -443,45 +458,49 @@ def main():
         command_count += 1
         print(f"\n[Command {command_count}] '{user_input}'")
 
-        # 1. Parse
-        new_subtasks = parser.parse_command(user_input)
-        if not new_subtasks:
+        # Parse
+        simplified_subtasks = parser.parse_command(user_input)
+        if not simplified_subtasks:
             print("  ❌ Could not parse. Try rephrasing.")
             command_count -= 1
             continue
+
+        # Enrich
+        new_subtasks = enricher.enrich_subtasks(simplified_subtasks)
         print(f"  📋 {len(new_subtasks)} subtask(s) generated")
 
-        # 2. Accumulate
+        # Accumulate
         all_subtasks  += new_subtasks
         total_subtasks = len(all_subtasks)
 
-        # 3. Write task JSON with ALL subtasks
+        # Write task JSON
         task_file = TASK_DIR / f"set_table_task_{SESSION_NAME}_cmd{command_count:02d}.json"
         build_task_json(all_subtasks, task_file)
 
-        # 4. Create env
+        # Create env
         safe_name  = user_input[:25].replace(" ", "_")
         video_path = SESSION_DIR / f"cmd_{command_count:02d}_{safe_name}"
         env = create_env(task_file, video_path)
 
-        # 5. Run
-        success, new_ptr = run_until_done(
+        # Run
+        success, new_ptr, failed_info = run_until_done(
             env, policies,
             start_subtask_idx=completed_ptr,
             total_subtasks=total_subtasks,
+            all_subtasks=all_subtasks
         )
 
-        # 6. Collect clip
+        # Collect clip
         clips = sorted(video_path.parent.glob(f"{video_path.name}*.mp4"))
         if clips:
             video_files.append(str(clips[-1]))
             print(f"  🎬 Clip: {clips[-1].name}")
 
-        # 7. Update state
+        # Update state
         completed_ptr = new_ptr
         env.close()
 
-        # 8. Sync parser object locations
+        # Sync parser object locations
         for subtask in new_subtasks:
             stype = subtask.get("type")
             obj   = subtask.get("obj_id", "")
@@ -490,8 +509,19 @@ def main():
             elif stype == "place":
                 parser.update_object_location(obj, subtask.get("target", "counter"))
 
-        status = "✅ Success" if success else "⚠️  Partial"
-        print(f"  {status} | {completed_ptr}/{total_subtasks} subtasks done")
+        # Show status with failure details
+        if success:
+            print(f"  ✅ Success | {completed_ptr}/{total_subtasks} subtasks done")
+        else:
+            print(f"  ❌ Failed | {completed_ptr}/{total_subtasks} subtasks done")
+            if failed_info:
+                print(f"\n  📝 Subtasks attempted:")
+                for i, subtask in enumerate(all_subtasks, 1):
+                    status = "✅" if i < failed_info['subtask_number'] else \
+                            "❌" if i == failed_info['subtask_number'] else "⏭️"
+                    task_type = subtask.get('type', 'unknown')
+                    obj_id = subtask.get('obj_id', 'N/A')
+                    print(f"     {status} {i}. {task_type} (obj: {obj_id})")
 
 
 if __name__ == "__main__":
